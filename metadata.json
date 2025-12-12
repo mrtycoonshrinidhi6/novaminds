@@ -1,0 +1,8 @@
+{
+  "name": "NovaMinds - Research & Build Agent",
+  "description": "An autonomous multi-agent engineering pipeline that plans, researches, codes, tests, and designs complex multimodal solutions using Gemini 2.5.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
