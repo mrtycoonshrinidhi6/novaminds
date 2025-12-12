@@ -7,6 +7,7 @@ import Terminal from './components/Terminal';
 import FileExplorer from './components/FileExplorer';
 import PlanViewer from './components/PlanViewer';
 import VisualOutput from './components/VisualOutput';
+import Preview from './components/Preview';
 
 const STORAGE_KEY = 'novaminds_project_cache_v1';
 
@@ -20,7 +21,7 @@ const App: React.FC = () => {
     logs: [],
     visuals: []
   });
-  const [activeTab, setActiveTab] = useState<'plan' | 'files' | 'visuals'>('plan');
+  const [activeTab, setActiveTab] = useState<'plan' | 'files' | 'visuals' | 'preview'>('plan');
   const [selectedFile, setSelectedFile] = useState<ProjectFile | null>(null);
 
   // Undo/Redo Engine
@@ -40,15 +41,13 @@ const App: React.FC = () => {
     if (savedState) {
       try {
         const parsed: ProjectState = JSON.parse(savedState);
-        // Revive Date objects
         parsed.logs = parsed.logs.map(log => ({
           ...log,
           timestamp: new Date(log.timestamp)
         }));
         setState(parsed);
-        // If there are files, default to showing them if the plan is already done
         if (parsed.files.length > 0 && parsed.plan.every(p => p.status === 'done')) {
-          setActiveTab('files');
+          setActiveTab('preview'); // Default to preview if build is finished
         }
       } catch (err) {
         console.error("Failed to restore NovaMinds session:", err);
@@ -57,7 +56,6 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    // Only save if we have actual data to preserve
     if (state.plan.length > 0 || state.files.length > 0 || state.logs.length > 0) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     }
@@ -80,7 +78,6 @@ const App: React.FC = () => {
       setPlanFuture([]);
     }
   }, []);
-  // --- End Persistence Logic ---
 
   const saveHistory = useCallback(() => {
     setPlanHistory(prev => [...prev, [...state.plan.map(s => ({...s}))]]);
@@ -105,18 +102,15 @@ const App: React.FC = () => {
     addLog('System', 'Redo successful: Advanced to next architecture state.', 'info');
   }, [planFuture, state.plan, addLog]);
 
-  // Command handlers
   const handleDeleteStep = useCallback((id: string) => {
     saveHistory();
     setState(prev => ({ ...prev, plan: prev.plan.filter(s => s.id !== id) }));
-    addLog('User', `Removed node ${id} from workflow.`, 'warning');
-  }, [saveHistory, addLog]);
+  }, [saveHistory]);
 
   const handleAddStep = useCallback((step: Omit<PlanStep, 'status'>) => {
     saveHistory();
     setState(prev => ({ ...prev, plan: [...prev.plan, { ...step, status: 'pending' }] }));
-    addLog('User', `Injected custom milestone: ${step.title}`, 'success');
-  }, [saveHistory, addLog]);
+  }, [saveHistory]);
 
   const handleEditStep = useCallback((updatedStep: PlanStep) => {
     saveHistory();
@@ -124,14 +118,12 @@ const App: React.FC = () => {
       ...prev,
       plan: prev.plan.map(s => s.id === updatedStep.id ? updatedStep : s)
     }));
-    addLog('User', `Modified architecture for: ${updatedStep.title}`, 'info');
-  }, [saveHistory, addLog]);
+  }, [saveHistory]);
 
   const handleReorderSteps = useCallback((newSteps: PlanStep[]) => {
     saveHistory();
     setState(prev => ({ ...prev, plan: newSteps }));
-    addLog('User', 'Re-sequenced execution priorities.', 'info');
-  }, [saveHistory, addLog]);
+  }, [saveHistory]);
 
   const handleUpdateStatus = useCallback((id: string, status: PlanStep['status']) => {
     saveHistory();
@@ -139,27 +131,24 @@ const App: React.FC = () => {
       ...prev,
       plan: prev.plan.map(s => s.id === id ? { ...s, status } : s)
     }));
-    addLog('User', `Manual status update [${id}]: ${status}`, 'info');
-  }, [saveHistory, addLog]);
+  }, [saveHistory]);
 
   const generatePlan = async () => {
     if (!prompt.trim() || isProcessing) return;
     setIsProcessing(true);
     setPlanHistory([]);
     setPlanFuture([]);
-    // Partial reset for new request
     setState(prev => ({ ...prev, status: AgentStatus.PLANNING, plan: [], visuals: [] }));
     addLog('NovaMinds', 'Initializing autonomous engineering pipeline...', 'info');
 
     try {
-      addLog('Planner', 'Constructing dependency graph and roadmap...', 'info');
       const plan = await planningAgent(prompt);
       setState(prev => ({ 
         ...prev, 
         status: AgentStatus.IDLE,
         plan: plan.map(s => ({ ...s, status: 'pending' as const })) 
       }));
-      addLog('Planner', 'Architecture roadmap finalized. Review before execution.', 'success');
+      addLog('Planner', 'Architecture roadmap finalized.', 'success');
       setActiveTab('plan');
     } catch (error: any) {
       addLog('System', `Critical Planning Failure: ${error.message}`, 'error');
@@ -176,7 +165,7 @@ const App: React.FC = () => {
     addLog('NovaMinds', 'Build sequence initiated.', 'info');
 
     try {
-      const allFiles = [...state.files];
+      let allFiles = [...state.files];
       const steps = state.plan;
 
       for (let i = 0; i < steps.length; i++) {
@@ -192,27 +181,23 @@ const App: React.FC = () => {
         const context = allFiles.map(f => `FILE: ${f.path}\n${f.content}`).join('\n\n');
         const generatedFiles = await codingAgent(step, context);
         
-        addLog('Tester', `Verifying integrity of ${step.title}...`, 'info');
         const testResult = await testingAgent(generatedFiles);
-        
         if (!testResult.passed) {
-          addLog('Tester', `Validation failed: ${testResult.feedback}. Applying self-correction...`, 'warning');
+          addLog('Tester', `Validation failed. Self-correcting...`, 'warning');
           const refinedFiles = await codingAgent(step, `${context}\n\nPREVIOUS ATTEMPT FEEDBACK:\n${testResult.feedback}`);
-          allFiles.push(...refinedFiles);
+          allFiles = [...allFiles, ...refinedFiles];
         } else {
-          addLog('Tester', `${step.title} verified successfully.`, 'success');
-          allFiles.push(...generatedFiles);
+          allFiles = [...allFiles, ...generatedFiles];
         }
 
         setState(prev => ({
           ...prev,
-          files: [...allFiles],
+          files: allFiles,
           plan: prev.plan.map(s => s.id === step.id ? { ...s, status: 'done' as const } : s)
         }));
       }
 
       setState(prev => ({ ...prev, status: AgentStatus.DESIGNING }));
-      addLog('Designer', 'Rendering system blueprints and visuals...', 'info');
       const visualOutput = await uiVisualAgent(prompt, state.plan);
       if (visualOutput) {
         setState(prev => ({
@@ -223,6 +208,7 @@ const App: React.FC = () => {
 
       setState(prev => ({ ...prev, status: AgentStatus.COMPLETED }));
       addLog('NovaMinds', 'Project synthesis complete. All modules operational.', 'success');
+      setActiveTab('preview'); // Automatically switch to preview when finished
     } catch (error: any) {
       addLog('System', `Critical Build Error: ${error.message}`, 'error');
       setState(prev => ({ ...prev, status: AgentStatus.FAILED }));
@@ -230,21 +216,6 @@ const App: React.FC = () => {
       setIsProcessing(false);
     }
   };
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
-        e.preventDefault();
-        handleUndo();
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
-        e.preventDefault();
-        handleRedo();
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUndo, handleRedo]);
 
   return (
     <div className="flex h-screen w-full bg-slate-950 overflow-hidden text-slate-200">
@@ -263,8 +234,9 @@ const App: React.FC = () => {
           <div className="flex flex-col flex-1 border-r border-slate-800/50">
             <div className="flex items-center space-x-1 px-4 py-2 border-b border-slate-800/60 bg-slate-900/40 backdrop-blur-md">
               {[
-                { id: 'plan', label: 'Architecture Roadmap', icon: 'fa-route' },
+                { id: 'plan', label: 'Walkthrough', icon: 'fa-route' },
                 { id: 'files', label: 'System Files', icon: 'fa-file-code' },
+                { id: 'preview', label: 'Live Build', icon: 'fa-rocket' },
                 { id: 'visuals', label: 'Blueprints', icon: 'fa-swatchbook' }
               ].map(tab => (
                 <button 
@@ -284,47 +256,22 @@ const App: React.FC = () => {
               <div className="absolute inset-0 overflow-auto custom-scrollbar p-6">
                 {activeTab === 'plan' && (
                   <PlanViewer 
-                    steps={state.plan} 
-                    onDelete={handleDeleteStep}
-                    onAddStep={handleAddStep}
-                    onEditStep={handleEditStep}
-                    onReorderSteps={handleReorderSteps}
-                    onUpdateStatus={handleUpdateStatus}
-                    onUndo={handleUndo}
-                    onRedo={handleRedo}
-                    canUndo={planHistory.length > 0}
-                    canRedo={planFuture.length > 0}
-                    onExecute={executePlan}
-                    isProcessing={isProcessing}
+                    steps={state.plan} onDelete={handleDeleteStep} onAddStep={handleAddStep} onEditStep={handleEditStep} onReorderSteps={handleReorderSteps} onUpdateStatus={handleUpdateStatus} onUndo={handleUndo} onRedo={handleRedo} canUndo={planHistory.length > 0} canRedo={planFuture.length > 0} onExecute={executePlan} isProcessing={isProcessing}
                   />
                 )}
+                {activeTab === 'preview' && <Preview files={state.files} />}
                 {activeTab === 'files' && (
                   <div className="flex h-full space-x-6">
                     <div className="w-72 flex-shrink-0">
                       <FileExplorer files={state.files} onSelect={setSelectedFile} activeFile={selectedFile} />
                     </div>
-                    <div className="flex-1 overflow-hidden flex flex-col bg-slate-900/80 rounded-[2rem] border border-slate-800/60 shadow-inner">
+                    <div className="flex-1 overflow-hidden flex flex-col bg-slate-900/80 rounded-[2rem] border border-slate-800/60 shadow-inner p-6">
                       {selectedFile ? (
-                        <>
-                          <div className="px-6 py-4 border-b border-slate-800/60 flex items-center justify-between">
-                             <div className="flex items-center space-x-3">
-                               <div className="w-8 h-8 rounded-lg bg-indigo-500/10 flex items-center justify-center border border-indigo-500/20">
-                                 <i className="fa-solid fa-code text-indigo-400 text-xs"></i>
-                               </div>
-                               <span className="text-sm font-black text-slate-200 tracking-tight">{selectedFile.path}</span>
-                             </div>
-                             <button className="p-2 hover:bg-white/5 rounded-lg text-slate-500 transition-colors">
-                               <i className="fa-solid fa-copy"></i>
-                             </button>
-                          </div>
-                          <div className="flex-1 overflow-auto p-6 font-mono text-xs leading-relaxed custom-scrollbar whitespace-pre text-indigo-100/80 selection:bg-indigo-500 selection:text-white">
-                            {selectedFile.content}
-                          </div>
-                        </>
+                         <div className="flex-1 overflow-auto font-mono text-xs leading-relaxed whitespace-pre text-indigo-100/80 custom-scrollbar">{selectedFile.content}</div>
                       ) : (
                         <div className="flex-1 flex flex-col items-center justify-center text-slate-600 space-y-4">
                            <i className="fa-solid fa-code text-5xl opacity-10"></i>
-                           <p className="italic text-sm">Select a synthesized file to inspect logic.</p>
+                           <p className="italic text-sm">Select a file to inspect synthesis.</p>
                         </div>
                       )}
                     </div>
@@ -334,31 +281,12 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            {/* Bottom Terminal */}
-            <div className="h-60 border-t border-slate-800/60 bg-slate-900/60 backdrop-blur-lg flex flex-col shadow-2xl">
-               <div className="px-6 py-3 border-b border-slate-800/60 flex items-center justify-between">
-                  <div className="flex items-center space-x-3">
-                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">Neural Logs</span>
-                    <div className="flex items-center space-x-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20">
-                      <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
-                      <span className="text-[9px] font-bold text-emerald-400">ACTIVE</span>
-                    </div>
-                  </div>
-                  <div className="text-[10px] font-mono text-slate-600">
-                    NOVAMINDS CORE V2.5
-                  </div>
-               </div>
+            <div className="h-48 border-t border-slate-800/60 bg-slate-900/60 backdrop-blur-lg">
                <Terminal logs={state.logs} />
             </div>
           </div>
         </div>
       </div>
-      <style>{`
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #334155; }
-      `}</style>
     </div>
   );
 };
